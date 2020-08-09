@@ -26,49 +26,55 @@
 'use strict';
 
 const express = require('express');
+const app = express();
+const avro = require('avsc');
 
 const {PubSub} = require('@google-cloud/pubsub');
 const pubsub = new PubSub();
 
-const uuidv4 = require('uuid/v4');
+const { Storage } = require('@google-cloud/storage')
+const storage = new Storage()
+
+//const uuidv4 = require('uuid/v4');
 
 const queryStringParser = require('query-string');
 const urlParser = require('url');
 const parser = require('ua-parser-js');
 
 const _ = require('lodash');
+
 const topic = process.env.TOPIC;
-const schemaBucket = process.env.SCHEMA_BUCKET;
+const schemaBucket = storage.bucket(process.env.SCHEMA_BUCKET || 'streamprocessor-demo-schemas-38b3d09');
+const schemaName = process.env.SCHEMA_NAME || 'com.google.analytics.v1.Entity.avsc';
+
+//console.log(schemaBucket);
+console.log(schemaName);
 
 // Create an Express object
-const app = express();
+
+//let avroString = '{}';
+let registry = {}; // Registry where new types get added.
+let unionType, inputType, outputType;
+
+const readJsonFromFile = async remoteFilePath => new Promise((resolve, reject) => {
+    console.log('hello');
+    let buf = ''
+    schemaBucket.file(remoteFilePath)
+      .createReadStream()
+      .on('data', d => (buf += d))
+      .on('end', () => resolve(buf))
+      .on('error', e => reject(e))
+  })
+
 app.set('trust proxy', true);
 app.post('/', apiPost);
 exports.com_google_analytics_v1 = app;
 
-// get schema
-const avroString = fs.readFileSync('./com.google.analytics.v1.Entity.avsc', "utf8");
-
-try {
-   JSON.parse(avroString);
-} catch (e) {
-   if (e instanceof SyntaxError) {
-      printError(e, true);
-      var index = parseInt(e.message.replace(/\n/, '').match(/.*position.([0-9]{1,5})$/)[1]);
-      // print where in the avro schema the error is comin from
-      console.log(avroString.substring(index-50, index) + '^^^' + avroString.substring(index, index+50));
-  } else {
-      printError(e, false);
-  }
-}
-
-const registry = {}; // Registry where new types get added.
-const unionType = avro.Type.forSchema(JSON.parse(avroString), {registry});
-const inputType = registry['com.google.analytics.v1.transformed.Entity'];
-const outputType = registry['com.google.analytics.v1.Entity'];
-
-
 function processing(request){
+    console.log(request.body.message.data);
+    console.log(Buffer.from(request.body.message.data, 'base64'));
+    console.log(inputType);
+    console.log(outputType);
     const inputData = inputType.fromBuffer(Buffer.from(request.body.message.data, 'base64'));
     const attributes = request.body.message.attributes;
 
@@ -87,6 +93,14 @@ function processing(request){
 }
 
 async function publish(request, response){
+    if(typeof inputType === 'undefined' || typeof outputType === 'undefined'){
+        await readJsonFromFile(schemaName).then(function(avroString){
+            console.log(avroString);
+            unionType = avro.Type.forSchema(JSON.parse(avroString), {registry});
+            inputType = registry['com.google.analytics.v1.transformed.Entity'];
+            outputType = registry['com.google.analytics.v1.Entity'];
+        })
+    }
 
     //process request
     var messages = processing(request); 

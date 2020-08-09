@@ -239,6 +239,28 @@
     ]
   },
   {
+    "name" : "Device", 
+    "namespace" : "com.google.analytics.v1",
+    "type" : "record", 
+    "fields" : [
+      {
+        "name" : "userAgent", 
+        "type" : ["null", "string"],
+        "default" : null
+      },
+      {
+        "name" : "browser", 
+        "type" : ["null","com.google.analytics.v1.transformed.device.Browser"],
+        "default" : null
+      },
+      {
+        "name" : "screen", 
+        "type" : ["null","com.google.analytics.v1.device.Screen"],
+        "default" : null
+      }
+    ]
+  },
+  {
     "name" : "Geo", 
     "namespace" : "com.google.analytics.v1",
     "type" : "record", 
