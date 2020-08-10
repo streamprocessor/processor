@@ -1,5 +1,5 @@
 # Test locally
-npm start
+TOPIC=processed-4833097 npm start
 
 # Deploy Cloud Functions from shell
 gcloud functions deploy com_google_analytics_v1_Hit --region europe-west1 --runtime nodejs10 --trigger-http --max-instances 5

@@ -46,6 +46,11 @@ const _ = require('lodash');
 const topic = process.env.TOPIC;
 const schemaBucket = storage.bucket(process.env.SCHEMA_BUCKET || 'streamprocessor-demo-schemas-38b3d09');
 const schemaName = process.env.SCHEMA_NAME || 'com.google.analytics.v1.Entity.avsc';
+const searchEnginesPattern = process.env.SEARCH_ENGINES_PATTERN || '/.*(www\.google\.|www\.bing\.|search\.yahoo\.).*/';
+const ignoredReferersPattern = process.env.IGNORED_REFERERS_PATTERN || '';
+const socialNetworksPattern = process.env.SOCIAL_NETWORKS_PATTERN || '/.*(facebook\.|instagram\.|youtube\.|linkedin\.|twitter\.).*/';
+const siteSearchPattern = process.env.SITE_SEARCH_PATTERN || '.*q=(([^&#]*)|&|#|$)';
+const excludedUserAgentsPattern = process.env.EXCLUDED_USER_AGENTS_PATTERN || '/(?!)/';
 
 //console.log(schemaBucket);
 console.log(schemaName);
@@ -70,53 +75,86 @@ app.set('trust proxy', true);
 app.post('/', apiPost);
 exports.com_google_analytics_v1 = app;
 
-function processing(request){
-    console.log(request.body.message.data);
-    console.log(Buffer.from(request.body.message.data, 'base64'));
-    console.log(inputType);
-    console.log(outputType);
-    const inputData = inputType.fromBuffer(Buffer.from(request.body.message.data, 'base64'));
-    const attributes = request.body.message.attributes;
-
-    /*** START processing ***/ 
-    var message = {};
-    
-    message.attributes = typeof attributes  !== 'undefined' ?  Object.assign({}, attributes)  : {};
-    message.attributes.namespace = 'com.google.analytics.v1';
-    message.attributes.name = 'Entity';    
-
-    var outputData = inputData;
-    
-    /*** STOP transformation ***/
-    message.data = outputType.toBuffer(outputData);
-    return message;
-}
-
-async function publish(request, response){
-    if(typeof inputType === 'undefined' || typeof outputType === 'undefined'){
+async function processing(request){
+     // get avro schema if not already cached
+     if(typeof inputType === 'undefined' || typeof outputType === 'undefined'){
         await readJsonFromFile(schemaName).then(function(avroString){
             console.log(avroString);
             unionType = avro.Type.forSchema(JSON.parse(avroString), {registry});
             inputType = registry['com.google.analytics.v1.transformed.Entity'];
-            outputType = registry['com.google.analytics.v1.Entity'];
+            outputType = registry['com.google.analytics.v1.processed.Entity'];
         })
+    } else{
+        console.log('schema is cached');
     }
 
+    //console.log(request.body.message.data);
+    console.log(Buffer.from(request.body.message.data, 'base64'));
+    console.log(inputType);
+    console.log(outputType);
+
+    /*** START processing ***/ 
+
+    const inputData = inputType.fromBuffer(Buffer.from(request.body.message.data, 'base64'));
+    if(!inputData.device.userAgent.match(excludedUserAgentsPattern)){
+        const attributes = request.body.message.attributes;
+    
+        var message = {};
+        
+        message.attributes = typeof attributes  !== 'undefined' ?  Object.assign({}, attributes)  : {};
+        message.attributes.namespace = 'com.google.analytics.v1.processed';
+        message.attributes.name = 'Entity';
+
+        console.log(inputData);
+
+        var outputData = inputData;
+
+        // Site search logic
+        if(inputData.content.url.match(siteSearchPattern)){
+            outputData.content.searchKeyword = inputData.content.url.match(siteSearchPattern)[1];
+        }
+
+        // Traffic source logic
+        if(typeof inputData.trafficSource.gclid !== 'undefined'){
+            outputData.trafficSource.source = 'google search ads';
+            outputData.trafficSource.medium = 'cpc';
+        }else if(typeof inputData.trafficSource.dclid !== 'undefined'){
+            outputData.trafficSource.source = 'google display & video';
+            outputData.trafficSource.medium = 'cpm';
+        }else if(typeof inputData.trafficSource.utm.source !== 'undefined'){
+            outputData.trafficSource.source = inputData.trafficSource.utm.source;
+            outputData.trafficSource.medium = inputData.trafficSource.utm.medium;
+            outputData.trafficSource.name = inputData.trafficSource.utm.name;
+            outputData.trafficSource.content = inputData.trafficSource.utm.content;
+        }
+
+        
+        /*** STOP transformation ***/
+        message.data = outputType.toBuffer(outputData);
+        return message;
+    }else{
+        console.info('excluded user agent');
+    }
+}
+
+async function publish(request, response){
+   
+
     //process request
-    var messages = processing(request); 
+    var message = await processing(request); 
     
     // Publish to topic
-    let messageIds = await Promise.all(
-        messages.map(async message => { 
-            return pubsub
+    if(typeof message !== 'undefined'){
+        try{
+            let messageId =  await pubsub
                 .topic(topic)
-                .publish(message.data, message.attributes)
-        }))
-        .catch(function(err) {
+                .publish(message.data, message.attributes);
+            console.log(messageId);
+        } catch(err) {
             console.error(err.message);
             response.status(400).end(`error when publishing data object to pubsub`);
-        });
-    console.log(messageIds);
+        };
+    }
 }
 
 // Collect pubsub push request (POST), transform it and publish data on pubsub
